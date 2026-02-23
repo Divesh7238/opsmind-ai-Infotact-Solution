@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # OpsMind AI - Enterprise Knowledge Assistant
 
 A production-ready SaaS web application that answers questions from uploaded company documents using Retrieval Augmented Generation (RAG). Built with React, Node.js, Express, MongoDB, and LangChain.
@@ -221,3 +222,7 @@ MIT License
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+=======
+# opsmind-ai-Infotact-Solution
+Enterprise Hybrid RAG + General AI Corporate Knowledge Assistant built with MERN, MongoDB Atlas Vector Search and Gemini/OpenAI.
+>>>>>>> 04a4fa775185ffbe5a29c88a73da53e1ee031744
