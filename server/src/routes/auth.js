@@ -1,6 +1,7 @@
 import express from 'express';
 import User from '../models/User.js';
 import { protect, generateToken, authorize } from '../middleware/auth.js';
+import { isDBConnected, requireDB } from '../index.js';
 
 const router = express.Router();
 
@@ -8,6 +9,15 @@ const router = express.Router();
 // @desc    Register a new user (Public - Employee only)
 // @access  Public
 router.post('/register', async (req, res) => {
+  // Check if database is available
+  if (!isDBConnected) {
+    return res.status(503).json({ 
+      error: 'Registration unavailable',
+      demo: true,
+      message: 'Database not connected. Please configure MONGODB_URI in server/.env for full functionality.'
+    });
+  }
+  
   try {
     const { name, email, password } = req.body;
 
@@ -60,6 +70,38 @@ router.post('/register', async (req, res) => {
 // @desc    Login user
 // @access  Public
 router.post('/login', async (req, res) => {
+  // Allow demo login with hardcoded credentials (works with or without MongoDB)
+  const { email, password } = req.body;
+  
+  // Demo admin login
+  if (email === 'admin@opsmind.ai' && password === 'admin123') {
+    return res.json({
+      token: 'demo-token-admin',
+      user: {
+        id: 'demo-admin-id',
+        name: 'Demo Admin',
+        email: 'admin@opsmind.ai',
+        role: 'admin'
+      },
+      demo: true
+    });
+  }
+  
+  // Demo employee login
+  if (email === 'employee@opsmind.ai' && password === 'employee123') {
+    return res.json({
+      token: 'demo-token-employee',
+      user: {
+        id: 'demo-employee-id',
+        name: 'Demo Employee',
+        email: 'employee@opsmind.ai',
+        role: 'employee'
+      },
+      demo: true
+    });
+  }
+  
+  // Try database login
   try {
     const { email, password } = req.body;
 

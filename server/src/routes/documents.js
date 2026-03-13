@@ -7,6 +7,7 @@ import Document from '../models/Document.js';
 import Chunk from '../models/Chunk.js';
 import { protect, authorize } from '../middleware/auth.js';
 import { processDocument } from '../services/documentProcessor.js';
+import { requireDB } from '../index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,10 +47,23 @@ const upload = multer({
   }
 });
 
+// Multer error handler middleware
+const handleMulterError = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File too large. Maximum size is 50MB.' });
+    }
+    return res.status(400).json({ error: err.message });
+  } else if (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  next();
+};
+
 // @route   POST /api/documents
 // @desc    Upload a document
 // @access  Private (Admin only)
-router.post('/', protect, authorize('admin'), upload.single('file'), async (req, res) => {
+router.post('/', protect, authorize('admin'), upload.single('file'), handleMulterError, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -88,6 +102,9 @@ router.post('/', protect, authorize('admin'), upload.single('file'), async (req,
 // @desc    Get all documents
 // @access  Private
 router.get('/', protect, async (req, res) => {
+  if (!requireDB) {
+    return res.status(503).json({ error: 'Database not available', demo: true });
+  }
   try {
     const documents = await Document.find()
       .populate('uploadedBy', 'name email')
@@ -104,6 +121,9 @@ router.get('/', protect, async (req, res) => {
 // @desc    Get single document
 // @access  Private
 router.get('/:id', protect, async (req, res) => {
+  if (!requireDB) {
+    return res.status(503).json({ error: 'Database not available', demo: true });
+  }
   try {
     const document = await Document.findById(req.params.id)
       .populate('uploadedBy', 'name email');
@@ -179,3 +199,4 @@ router.post('/:id/reprocess', protect, authorize('admin'), async (req, res) => {
 });
 
 export default router;
+

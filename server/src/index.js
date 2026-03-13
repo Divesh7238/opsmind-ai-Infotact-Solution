@@ -55,16 +55,64 @@ if (!fs.existsSync(uploadDir)){
 }
 app.use('/uploads', express.static(uploadDir));
 
-// MongoDB Connection
+// MongoDB Connection with fallback options
+let isDBConnected = false;
+
 const connectDB = async () => {
+  const mongooseOptions = {
+    serverSelectionTimeoutMS: 10000,
+    socketTimeoutMS: 45000,
+    connectTimeoutMS: 10000,
+  };
+  
   try {
-    const conn = await mongoose.connect(process.env.MONGODB_URI);
+    // Try primary connection
+    const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI;
+    
+    if (!mongoUri) {
+      throw new Error('MONGODB_URI not configured');
+    }
+    
+    const conn = await mongoose.connect(mongoUri, mongooseOptions);
+    isDBConnected = true;
     console.log(`MongoDB Connected: ${conn.connection.host}`);
+    return conn;
   } catch (error) {
-    console.error(`Error: ${error.message}`);
-    process.exit(1);
+    console.error(`MongoDB Error: ${error.message}`);
+    
+    // Try alternative connection (from env or hardcoded fallback)
+    try {
+      const altUri = process.env.MONGODB_URI_ALT || 
+        process.env.MONGO_URI ||
+        'mongodb://localhost:27017/opsmind';
+      console.log(`Trying fallback URI: ${altUri.substring(0, 30)}...`);
+      const conn2 = await mongoose.connect(altUri, mongooseOptions);
+      isDBConnected = true;
+      console.log(`MongoDB Connected (alt): ${conn2.connection.host}`);
+      return conn2;
+    } catch (error2) {
+      console.error(`MongoDB Alt Error: ${error2.message}`);
+      console.warn('⚠️ Running without database connection - App will work in DEMO mode');
+      console.warn('To enable full functionality, configure MONGODB_URI in server/.env');
+      isDBConnected = false;
+      return null;
+    }
   }
 };
+
+// Middleware to check DB connection
+export const requireDB = (req, res, next) => {
+  if (!isDBConnected) {
+    return res.status(503).json({ 
+      error: 'Database not available',
+      demo: true,
+      message: 'Running in demo mode. Please configure MongoDB for full functionality.'
+    });
+  }
+  next();
+};
+
+export { isDBConnected };
 
 // Routes
 app.use('/api/auth', authRoutes);

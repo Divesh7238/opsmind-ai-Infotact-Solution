@@ -8,6 +8,19 @@ const router = express.Router();
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@opsmind.ai';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
+// Get JWT secret with warning for weak secrets
+const getJWT_SECRET = () => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    console.warn('⚠️ WARNING: JWT_SECRET not configured. Using insecure fallback. Set JWT_SECRET in .env for production!');
+    return 'demo-secret-key-fallback-minimum-32-chars';
+  }
+  if (secret.length < 32) {
+    console.warn('⚠️ WARNING: JWT_SECRET is too short. Use at least 32 characters for security!');
+  }
+  return secret;
+};
+
 // @route   POST /api/admin/login
 // @desc    Admin login with hardcoded credentials
 // @access  Public
@@ -24,7 +37,7 @@ router.post('/login', (req, res) => {
     // Generate JWT token
     const token = jwt.sign(
       { id: 'admin', role: 'admin' },
-      process.env.JWT_SECRET,
+      getJWT_SECRET(),
       { expiresIn: process.env.JWT_EXPIRE || '7d' }
     );
 
@@ -44,3 +57,4 @@ router.post('/login', (req, res) => {
 });
 
 export default router;
+
