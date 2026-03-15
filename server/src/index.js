@@ -23,13 +23,20 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const isHostedEnvironment = Boolean(
+  process.env.RENDER ||
+  process.env.RAILWAY_ENVIRONMENT ||
+  process.env.KOYEB_APP_NAME ||
+  process.env.FLY_APP_NAME ||
+  process.env.NODE_ENV === 'production'
+);
 
 // Security middleware
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production'
+  origin: isHostedEnvironment
     ? process.env.CLIENT_URL
     : ['http://localhost:5173', 'http://127.0.0.1:5173'],
   credentials: true
@@ -81,7 +88,7 @@ const getMongoCandidates = () => {
     { name: 'MONGODB_URI_ALT', value: process.env.MONGODB_URI_ALT },
   ];
 
-  if (process.env.NODE_ENV !== 'production') {
+  if (!isHostedEnvironment) {
     candidates.push({ name: 'local-dev-default', value: 'mongodb://localhost:27017/opsmind' });
   }
 
@@ -97,6 +104,11 @@ const getMongoCandidates = () => {
 
     if (!trimmed.startsWith('mongodb://') && !trimmed.startsWith('mongodb+srv://')) {
       console.warn(`Skipping invalid MongoDB URI from ${candidate.name}. URI must start with mongodb:// or mongodb+srv://`);
+      return false;
+    }
+
+    if (trimmed.startsWith('mongodb+srv://') && trimmed.includes('-shard-')) {
+      console.warn(`Skipping invalid MongoDB URI from ${candidate.name}. mongodb+srv:// must use the cluster host, not a shard host.`);
       return false;
     }
 
@@ -179,7 +191,7 @@ const startServer = async () => {
   await connectDB();
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Environment: ${isHostedEnvironment ? 'production-like' : (process.env.NODE_ENV || 'development')}`);
   });
 };
 
