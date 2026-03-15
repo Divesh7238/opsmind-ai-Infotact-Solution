@@ -19,18 +19,18 @@ import { errorHandler } from './middleware/errorHandler.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Security middleware
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? process.env.CLIENT_URL 
+  origin: process.env.NODE_ENV === 'production'
+    ? process.env.CLIENT_URL
     : ['http://localhost:5173', 'http://127.0.0.1:5173'],
   credentials: true
 }));
@@ -50,13 +50,60 @@ app.use(expressSanitizer());
 
 // Ensure upload directory exists
 const uploadDir = path.join(__dirname, '..', process.env.UPLOAD_PATH || './uploads');
-if (!fs.existsSync(uploadDir)){
+if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 app.use('/uploads', express.static(uploadDir));
 
-// MongoDB Connection with fallback options
+// MongoDB Connection with safe fallbacks
 let isDBConnected = false;
+
+const maskMongoUri = (uri) => {
+  if (!uri) {
+    return 'not set';
+  }
+
+  try {
+    const parsed = new URL(uri);
+    if (parsed.password) {
+      parsed.password = '***';
+    }
+    return parsed.toString();
+  } catch {
+    return `${uri.slice(0, 24)}...`;
+  }
+};
+
+const getMongoCandidates = () => {
+  const candidates = [
+    { name: 'MONGODB_URI', value: process.env.MONGODB_URI },
+    { name: 'MONGO_URI', value: process.env.MONGO_URI },
+    { name: 'MONGODB_URI_ALT', value: process.env.MONGODB_URI_ALT },
+  ];
+
+  if (process.env.NODE_ENV !== 'production') {
+    candidates.push({ name: 'local-dev-default', value: 'mongodb://localhost:27017/opsmind' });
+  }
+
+  return candidates.filter((candidate) => {
+    if (typeof candidate.value !== 'string') {
+      return false;
+    }
+
+    const trimmed = candidate.value.trim();
+    if (!trimmed) {
+      return false;
+    }
+
+    if (!trimmed.startsWith('mongodb://') && !trimmed.startsWith('mongodb+srv://')) {
+      console.warn(`Skipping invalid MongoDB URI from ${candidate.name}. URI must start with mongodb:// or mongodb+srv://`);
+      return false;
+    }
+
+    candidate.value = trimmed;
+    return true;
+  });
+};
 
 const connectDB = async () => {
   const mongooseOptions = {
@@ -64,46 +111,39 @@ const connectDB = async () => {
     socketTimeoutMS: 45000,
     connectTimeoutMS: 10000,
   };
-  
-  try {
-    // Try primary connection
-    const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI;
-    
-    if (!mongoUri) {
-      throw new Error('MONGODB_URI not configured');
-    }
-    
-    const conn = await mongoose.connect(mongoUri, mongooseOptions);
-    isDBConnected = true;
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
-    return conn;
-  } catch (error) {
-    console.error(`MongoDB Error: ${error.message}`);
-    
-    // Try alternative connection (from env or hardcoded fallback)
+
+  const mongoCandidates = getMongoCandidates();
+
+  if (mongoCandidates.length === 0) {
+    console.error('MongoDB Error: no valid MongoDB URI configured');
+    console.warn('Running without database connection - App will work in DEMO mode');
+    console.warn('Set MONGODB_URI in the deployment environment for full functionality');
+    isDBConnected = false;
+    return null;
+  }
+
+  for (const candidate of mongoCandidates) {
     try {
-      const altUri = process.env.MONGODB_URI_ALT || 
-        process.env.MONGO_URI ||
-        'mongodb://localhost:27017/opsmind';
-      console.log(`Trying fallback URI: ${altUri.substring(0, 30)}...`);
-      const conn2 = await mongoose.connect(altUri, mongooseOptions);
+      console.log(`Trying MongoDB connection using ${candidate.name}: ${maskMongoUri(candidate.value)}`);
+      const conn = await mongoose.connect(candidate.value, mongooseOptions);
       isDBConnected = true;
-      console.log(`MongoDB Connected (alt): ${conn2.connection.host}`);
-      return conn2;
-    } catch (error2) {
-      console.error(`MongoDB Alt Error: ${error2.message}`);
-      console.warn('⚠️ Running without database connection - App will work in DEMO mode');
-      console.warn('To enable full functionality, configure MONGODB_URI in server/.env');
-      isDBConnected = false;
-      return null;
+      console.log(`MongoDB Connected: ${conn.connection.host}`);
+      return conn;
+    } catch (error) {
+      console.error(`MongoDB Error (${candidate.name}): ${error.message}`);
     }
   }
+
+  console.warn('Running without database connection - App will work in DEMO mode');
+  console.warn('Set MONGODB_URI in the deployment environment for full functionality');
+  isDBConnected = false;
+  return null;
 };
 
 // Middleware to check DB connection
 export const requireDB = (req, res, next) => {
   if (!isDBConnected) {
-    return res.status(503).json({ 
+    return res.status(503).json({
       error: 'Database not available',
       demo: true,
       message: 'Running in demo mode. Please configure MongoDB for full functionality.'
