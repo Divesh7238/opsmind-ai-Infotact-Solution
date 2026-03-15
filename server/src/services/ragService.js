@@ -1,116 +1,17 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import Groq from 'groq';
 import Chunk from '../models/Chunk.js';
 
 // Configuration
 const RAG_THRESHOLD = 0.65;
 const RETRIEVE_TOP_K = 2;
-const MAX_TOKENS = 500;
+const MAX_TOKENS = 1000;
+const EMBEDDING_MODEL = 'text-embedding-3-small';
 
 let embeddingsModel = null;
-let chatModel = null;
-let openaiClient = null;
-let genAI = null;
+let chatProviders = [];
 let aiInitialized = false;
-let currentProvider = null;
-
-// ============================================
-// INITIALIZATION
-// ============================================
-
-async function initializeAI() {
-  if (aiInitialized) return;
-  
-  const provider = process.env.AI_PROVIDER || 'gemini';
-  const geminiApiKey = process.env.GEMINI_API_KEY;
-  const openaiApiKey = process.env.OPENAI_API_KEY;
-  
-  if (!geminiApiKey && !openaiApiKey) {
-    console.warn('⚠️ No AI API key configured');
-    aiInitialized = true;
-    return;
-  }
-  
-  try {
-    if (provider === 'gemini' && geminiApiKey) {
-      await initGemini(geminiApiKey);
-    } else if (provider === 'openai' && openaiApiKey) {
-      await initOpenAI(openaiApiKey);
-    } else if (geminiApiKey) {
-      await initGemini(geminiApiKey);
-    } else if (openaiApiKey) {
-      await initOpenAI(openaiApiKey);
-    }
-    
-    aiInitialized = true;
-  } catch (error) {
-    console.error('❌ AI initialization error:', error);
-    aiInitialized = true;
-  }
-}
-
-async function initGemini(apiKey) {
-  genAI = new GoogleGenerativeAI(apiKey);
-  
-  embeddingsModel = {
-    embedQuery: async (text) => {
-      try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-embedding-001' });
-        const result = await model.embedContent(text);
-        return result.embedding?.values || [];
-      } catch (error) {
-        console.error('❌ Gemini embedding error:', error.message);
-        return createPseudoEmbedding(text);
-      }
-    }
-  };
-  
-  chatModel = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-  currentProvider = 'gemini';
-  console.log('✅ AI initialized: Gemini');
-}
-
-async function initOpenAI(apiKey) {
-  openaiClient = new OpenAI({ apiKey });
-  
-  embeddingsModel = {
-    embedQuery: async (text) => {
-      try {
-        const response = await openaiClient.embeddings.create({
-          model: 'text-embedding-3-small',
-          input: text
-        });
-        return response.data[0].embedding;
-      } catch (error) {
-        console.error('❌ OpenAI embedding error:', error.message);
-        return createPseudoEmbedding(text);
-      }
-    }
-  };
-  
-  chatModel = {
-    generateContent: async (contents) => {
-      const response = await openaiClient.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: contents[0]?.text || '' },
-          { role: 'user', content: contents[1]?.text || '' }
-        ],
-        max_tokens: MAX_TOKENS,
-        temperature: 0.7
-      });
-      
-      return {
-        response: {
-          text: () => response.choices[0]?.message?.content || ''
-        }
-      };
-    }
-  };
-  
-  currentProvider = 'openai';
-  console.log('✅ AI initialized: OpenAI');
-}
 
 // Pseudo embedding fallback
 function createPseudoEmbedding(text) {
@@ -123,35 +24,179 @@ function createPseudoEmbedding(text) {
   
   const vector = [];
   let seed = Math.abs(hash);
-  for (let i = 0; i < 768; i++) {
+  for (let i = 0; i < 1536; i++) {
     seed = (seed * 1103515245 + 12345) & 0x7fffffff;
     vector.push((seed / 0x7fffffff) * 2 - 1);
   }
   return vector;
 }
 
+// Provider factories - return async generateContent func
+async function createGeminiProvider(apiKey) {
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  return async (contents) => {
+    const systemPrompt = contents[0]?.text || '';
+    const userPrompt = contents[1]?.text || '';
+    const fullPrompt = systemPrompt + '\n\n' + userPrompt;
+    const result = await model.generateContent(fullPrompt);
+    console.log('✅ AI Provider Used: Gemini');
+    return {
+      response: {
+        text: () => result.response.text()
+      }
+    };
+  };
+}
+
+async function createGroqProvider(apiKey) {
+  const groq = new Groq({ apiKey });
+  return async (contents) => {
+    const messages = [
+      { role: 'system', content: contents[0]?.text || '' },
+      { role: 'user', content: contents[1]?.text || '' }
+    ];
+    const completion = await groq.chat.completions.create({
+      messages,
+      model: 'llama-3.1-8b-instant',
+      max_tokens: MAX_TOKENS,
+      temperature: 0.7
+    });
+    console.log('✅ AI Provider Used: Groq');
+    return {
+      response: {
+        text: () => completion.choices[0].message.content
+      }
+    };
+  };
+}
+
+async function createOpenAIProvider(apiKey) {
+  const openai = new OpenAI({ apiKey });
+  return async (contents) => {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: contents[0]?.text || '' },
+        { role: 'user', content: contents[1]?.text || '' }
+      ],
+      max_tokens: MAX_TOKENS,
+      temperature: 0.7
+    });
+    if (!response.choices?.[0]?.message?.content) {
+      throw new Error('Invalid OpenAI response format');
+    }
+    console.log('✅ AI Provider Used: OpenAI');
+    return {
+      response: {
+        text: () => response.choices[0].message.content
+      }
+    };
+  };
+}
+
 // ============================================
-// MODEL GETTERS
+ // INITIALIZATION
 // ============================================
+
+async function initializeAI() {
+  if (aiInitialized) return;
+  
+  // Embeddings - OpenAI primary with pseudo fallback
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  if (openaiApiKey) {
+    const openai = new OpenAI({ apiKey: openaiApiKey });
+    embeddingsModel = {
+      embedQuery: async (text) => {
+        try {
+          const response = await openai.embeddings.create({
+            model: EMBEDDING_MODEL,
+            input: text,
+          });
+          return response.data[0].embedding;
+        } catch (error) {
+          console.error('❌ OpenAI embedding error:', error.message);
+          return createPseudoEmbedding(text);
+        }
+      }
+    };
+  } else {
+    embeddingsModel = {
+      embedQuery: async (text) => createPseudoEmbedding(text)
+    };
+  }
+
+  // Chat providers - Gemini > Groq > OpenAI
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      chatProviders.push(await createGeminiProvider(process.env.GEMINI_API_KEY));
+    } catch (e) {
+      console.warn('Gemini provider init failed:', e.message);
+    }
+  }
+  if (process.env.GROQ_API_KEY) {
+    try {
+      chatProviders.push(await createGroqProvider(process.env.GROQ_API_KEY));
+    } catch (e) {
+      console.warn('Groq provider init failed:', e.message);
+    }
+  }
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      chatProviders.push(await createOpenAIProvider(process.env.OPENAI_API_KEY));
+    } catch (e) {
+      console.warn('OpenAI provider init failed:', e.message);
+    }
+  }
+
+  if (chatProviders.length === 0) {
+    console.warn('⚠️ No AI providers configured. Check GEMINI_API_KEY, GROQ_API_KEY, OPENAI_API_KEY in server/.env');
+  } else {
+    console.log(`✅ AI initialized with ${chatProviders.length} providers: ${chatProviders.map((_,i) => ['Gemini','Groq','OpenAI'][i] || 'Unknown').filter(Boolean).join(', ')}`);
+  }
+
+  aiInitialized = true;
+}
+
+// ============================================
+// CHAT MODEL with fallback
+// ============================================
+
+async function getChatModel() {
+  if (!aiInitialized) await initializeAI();
+  return {
+    generateContent: async (contents) => {
+      if (chatProviders.length === 0) {
+        throw new Error('No AI providers available. Please configure API keys in server/.env');
+      }
+      
+      for (let i = 0; i < chatProviders.length; i++) {
+        const provider = chatProviders[i];
+        try {
+          const result = await provider(contents);
+          return result;
+        } catch (error) {
+          console.warn(`Provider ${i + 1} failed:`, error.message);
+          if (i === chatProviders.length - 1) {
+            throw new Error('All AI providers failed. Please check your API keys and quotas.');
+          }
+        }
+      }
+    }
+  };
+}
+
+// ... (rest of the file unchanged: getEmbeddingsModel, generateEmbedding, cosineSimilarity, findRelevantChunks, detectMode, generateRAGAnswer, generateGeneralAnswer, askQuestion)
 
 async function getEmbeddingsModel() {
   if (!embeddingsModel) await initializeAI();
   return embeddingsModel;
 }
 
-async function getChatModel() {
-  if (!chatModel) await initializeAI();
-  return chatModel;
-}
-
 export async function generateEmbedding(text) {
   const model = await getEmbeddingsModel();
   return await model.embedQuery(text);
 }
-
-// ============================================
-// SIMILARITY CALCULATION
-// ============================================
 
 function cosineSimilarity(vec1, vec2) {
   if (!vec1 || !vec2 || vec1.length !== vec2.length) return 0;
@@ -170,15 +215,11 @@ function cosineSimilarity(vec1, vec2) {
   return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
 }
 
-// ============================================
-// CHUNK RETRIEVAL
-// ============================================
-
 export async function findRelevantChunks(question, topK = RETRIEVE_TOP_K) {
   try {
     const questionEmbedding = await generateEmbedding(question);
     
-    if (!questionEmbedding.some(v => Math.abs(v) > 0.01)) {
+    if (!questionEmbedding || !questionEmbedding.some(v => Math.abs(v) > 0.01)) {
       console.log('⚠️ Invalid embedding generated');
       return [];
     }
@@ -207,20 +248,18 @@ export async function findRelevantChunks(question, topK = RETRIEVE_TOP_K) {
       {
         $project: {
           text: 1,
-          sourceDocument: 1,
+          sourceDocument: '$document.name',
           pageNumber: 1,
           embedding: 1
         }
       }
     ]);
     
-    // Calculate similarity scores
     const scoredResults = results.map(chunk => ({
       ...chunk,
       similarity: cosineSimilarity(questionEmbedding, chunk.embedding)
     }));
     
-    // Sort by similarity
     return scoredResults.sort((a, b) => b.similarity - a.similarity);
     
   } catch (error) {
@@ -228,10 +267,6 @@ export async function findRelevantChunks(question, topK = RETRIEVE_TOP_K) {
     return [];
   }
 }
-
-// ============================================
-// MODE DETECTION
-// ============================================
 
 function detectMode(chunks) {
   if (!chunks || chunks.length === 0) {
@@ -247,25 +282,21 @@ function detectMode(chunks) {
   }
 }
 
-// ============================================
-// RAG MODE - Answer from documents
-// ============================================
-
 async function generateRAGAnswer(question, chunks) {
   const model = await getChatModel();
   
-  // Build context from chunks
   const context = chunks
-    .map((chunk, idx) => `[Document ${idx + 1}]: ${chunk.sourceDocument} (Page ${chunk.pageNumber})\n${chunk.text}`)
+    .map((chunk, idx) => `[Document ${idx + 1}]: ${chunk.sourceDocument} (Page ${chunk.pageNumber})\n${chunk.text}`) 
     .join('\n\n');
   
-  const systemPrompt = `You are a corporate assistant. Answer questions using ONLY the provided document context.
+  const systemPrompt = `You are a corporate knowledge assistant. Answer questions using ONLY the provided document context.
 
 Rules:
-- Provide clear, concise answers from the documents
-- Use bullet points when appropriate
-- Always cite the source at the end in format: Source: <filename> - Page <number>
-- If the context doesn't contain the answer, say "I don't have information about that in the provided documents."`;
+- Provide clear, concise, accurate answers
+- Use bullet points and numbered lists when helpful
+- Cite sources at the end: Source: <filename> - Page <number>
+- If unclear or not in context, say "Not found in provided documents."
+- Be professional and precise`;
 
   const userPrompt = `Context:\n${context}\n\nQuestion: ${question}\n\nAnswer:`;
 
@@ -276,7 +307,6 @@ Rules:
   
   const answer = result.response.text();
   
-  // Extract citations
   const citations = chunks.map(chunk => ({
     source: chunk.sourceDocument,
     pageNumber: chunk.pageNumber
@@ -285,16 +315,12 @@ Rules:
   return { answer, citations };
 }
 
-// ============================================
-// GENERAL MODE - Normal AI answer
-// ============================================
-
 async function generateGeneralAnswer(question) {
   const model = await getChatModel();
   
-  const systemPrompt = `You are a helpful AI assistant. Answer questions clearly and concisely. Use bullet points when appropriate. Be friendly and professional.`;
+  const systemPrompt = `You are OpsMind AI, a helpful corporate assistant. Answer questions professionally and concisely. Use bullet points when appropriate. Be friendly yet authoritative.`;
 
-  const userPrompt = `Question: ${question}\n\nAnswer:`;
+  const userPrompt = question;
 
   const result = await model.generateContent([
     { text: systemPrompt },
@@ -304,57 +330,6 @@ async function generateGeneralAnswer(question) {
   return { answer: result.response.text(), citations: [] };
 }
 
-// ============================================
-// QUOTA ERROR HANDLING
-// ============================================
-
-async function handleQuotaError(originalQuestion, mode) {
-  console.log('⚠️ Quota error detected');
-  
-  // Try to switch to secondary provider
-  const geminiKey = process.env.GEMINI_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
-  
-  if (currentProvider === 'gemini' && openaiKey) {
-    console.log('🔄 Switching to OpenAI...');
-    await initOpenAI(openaiKey);
-    
-    // Retry with new provider
-    if (mode === 'RAG') {
-      const chunks = await findRelevantChunks(originalQuestion);
-      const modeInfo = detectMode(chunks);
-      if (modeInfo.mode === 'RAG') {
-        return await generateRAGAnswer(originalQuestion, chunks);
-      }
-    }
-    return await generateGeneralAnswer(originalQuestion);
-  }
-  
-  if (currentProvider === 'openai' && geminiKey) {
-    console.log('🔄 Switching to Gemini...');
-    await initGemini(geminiKey);
-    
-    if (mode === 'RAG') {
-      const chunks = await findRelevantChunks(originalQuestion);
-      const modeInfo = detectMode(chunks);
-      if (modeInfo.mode === 'RAG') {
-        return await generateRAGAnswer(originalQuestion, chunks);
-      }
-    }
-    return await generateGeneralAnswer(originalQuestion);
-  }
-  
-  // No secondary provider - return clean error
-  return {
-    answer: "AI service temporarily unavailable. Please try again later.",
-    citations: []
-  };
-}
-
-// ============================================
-// MAIN QUESTION HANDLER
-// ============================================
-
 export async function askQuestion(question, onChunk, onCitations, onError) {
   try {
     console.log('\n========== NEW QUESTION ==========');
@@ -362,65 +337,38 @@ export async function askQuestion(question, onChunk, onCitations, onError) {
     
     await initializeAI();
     
-    // Check if AI is configured
-    if (!currentProvider) {
-      onChunk("Please configure GEMINI_API_KEY or OPENAI_API_KEY in server .env file.");
+    if (!chatProviders.length) {
+      onChunk("Please add AI API keys (GEMINI_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY) to server/.env and restart server.");
       return;
     }
     
-    // Step 1: Find relevant chunks
     const chunks = await findRelevantChunks(question, RETRIEVE_TOP_K);
     
-    // Step 2: Detect mode
     const { mode, maxSimilarity } = detectMode(chunks);
-    console.log(`MODE: ${mode} (similarity: ${maxSimilarity.toFixed(3)}, threshold: ${RAG_THRESHOLD})`);
+    console.log(`MODE: ${mode} (max similarity: ${maxSimilarity.toFixed(3)})`);
     
-    // Step 3: Generate answer based on mode
     let result;
-    
     if (mode === 'RAG') {
-      console.log('📄 Using RAG mode - answering from documents');
-      try {
-        result = await generateRAGAnswer(question, chunks);
-      } catch (quotaError) {
-        if (quotaError.message?.includes('429') || quotaError.message?.includes('quota')) {
-          result = await handleQuotaError(question, 'RAG');
-        } else {
-          throw quotaError;
-        }
-      }
+      console.log('📄 RAG mode - document-based answer');
+      result = await generateRAGAnswer(question, chunks);
     } else {
-      console.log('💬 Using GENERAL mode - normal AI answer');
-      try {
-        result = await generateGeneralAnswer(question);
-      } catch (quotaError) {
-        if (quotaError.message?.includes('429') || quotaError.message?.includes('quota')) {
-          result = await handleQuotaError(question, 'GENERAL');
-        } else {
-          throw quotaError;
-        }
-      }
+      console.log('💬 General mode - AI answer');
+      result = await generateGeneralAnswer(question);
     }
     
-    // Step 4: Send response
     console.log(`Answer length: ${result.answer.length} chars`);
-    if (result.citations.length > 0) {
+    if (result.citations?.length) {
       console.log('Citations:', result.citations.map(c => `${c.source} p.${c.pageNumber}`).join(', '));
     }
     
-    onCitations(result.citations);
+    onCitations(result.citations || []);
     onChunk(result.answer);
     
-    console.log('========== DONE ==========\n');
+    console.log('✅ COMPLETE\n');
     
   } catch (error) {
-    console.error('❌ Error:', error.message);
-    
-    // Check if it's a quota error
-    if (error.message?.includes('429') || error.message?.includes('quota')) {
-      onChunk("AI service temporarily unavailable due to quota limits. Please try again in a few minutes.");
-    } else {
-      onError(error);
-    }
+    console.error('❌ RAG Error:', error.message);
+    onError(error);
   }
 }
+
