@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { chatAPI } from '../services/api';
+import { API_BASE_URL, chatAPI } from '../services/api';
 import { 
   Send, 
   Copy, 
@@ -72,7 +72,7 @@ export default function Chat() {
     setMessages(prev => [...prev, newUserMessage]);
 
     try {
-      const response = await fetch('/api/chat/ask', {
+      const response = await fetch(`${API_BASE_URL}/chat/ask`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

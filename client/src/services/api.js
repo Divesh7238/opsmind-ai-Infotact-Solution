@@ -2,7 +2,7 @@ import axios from 'axios';
 
 const rawApiUrl = import.meta.env.VITE_API_URL?.trim();
 
-const API_BASE_URL = (() => {
+export const API_BASE_URL = (() => {
   if (!rawApiUrl) {
     return '/api';
   }
