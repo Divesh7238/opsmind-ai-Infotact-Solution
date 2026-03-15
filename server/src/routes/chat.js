@@ -107,7 +107,8 @@ router.post('/ask', protect, async (req, res) => {
       (error) => {
         console.error('RAG Error:', error);
         if (!res.writableEnded) {
-          fullAnswer = "I apologize, but I'm unable to process your question at the moment. Please ensure the GEMINI_API_KEY is configured in the server environment variables.";
+          fullAnswer = "I apologize, but I'm unable to process your question right now. Please verify your AI API keys, quotas, and provider settings in server/.env.";
+          res.write(`data: ${JSON.stringify({ type: 'chunk', content: fullAnswer })}\n\n`);
           res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
         }
       }
@@ -115,7 +116,7 @@ router.post('/ask', protect, async (req, res) => {
 
     // Ensure we have a valid answer
     if (!fullAnswer || fullAnswer.trim().length === 0) {
-      fullAnswer = "I don't have information about that in the provided documents, or the AI service is not properly configured.";
+      fullAnswer = "I couldn't generate a response. Please check whether at least one AI provider key is valid and whether the service has available quota.";
     }
 
     // Save chat if using database

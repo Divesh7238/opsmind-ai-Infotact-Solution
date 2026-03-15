@@ -1,17 +1,32 @@
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import Groq from 'groq';
+import Groq from 'groq-sdk';
 import Chunk from '../models/Chunk.js';
+import Document from '../models/Document.js';
 
 // Configuration
 const RAG_THRESHOLD = 0.65;
 const RETRIEVE_TOP_K = 2;
 const MAX_TOKENS = 1000;
 const EMBEDDING_MODEL = 'text-embedding-3-small';
+const DOCUMENT_ONLY_NO_ANSWER = 'This information is not available in the uploaded HR policy document.';
 
 let embeddingsModel = null;
 let chatProviders = [];
 let aiInitialized = false;
+
+function normalizeApiKey(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/^['"]|['"]$/g, '');
+}
+
+function isLikelyConfiguredApiKey(value, prefixes = []) {
+  const key = normalizeApiKey(value);
+  if (!key) return false;
+  if (key.toLowerCase().includes('your-') || key.toLowerCase().includes('here')) return false;
+  if (prefixes.length === 0) return true;
+  return prefixes.some(prefix => key.startsWith(prefix));
+}
 
 // Pseudo embedding fallback
 function createPseudoEmbedding(text) {
@@ -101,10 +116,11 @@ async function createOpenAIProvider(apiKey) {
 
 async function initializeAI() {
   if (aiInitialized) return;
+  chatProviders = [];
   
   // Embeddings - OpenAI primary with pseudo fallback
-  const openaiApiKey = process.env.OPENAI_API_KEY;
-  if (openaiApiKey) {
+  const openaiApiKey = normalizeApiKey(process.env.OPENAI_API_KEY);
+  if (isLikelyConfiguredApiKey(openaiApiKey, ['sk-'])) {
     const openai = new OpenAI({ apiKey: openaiApiKey });
     embeddingsModel = {
       embedQuery: async (text) => {
@@ -126,33 +142,55 @@ async function initializeAI() {
     };
   }
 
-  // Chat providers - Gemini > Groq > OpenAI
-  if (process.env.GEMINI_API_KEY) {
-    try {
-      chatProviders.push(await createGeminiProvider(process.env.GEMINI_API_KEY));
-    } catch (e) {
-      console.warn('Gemini provider init failed:', e.message);
-    }
+  const configuredProviders = [];
+  const geminiApiKey = normalizeApiKey(process.env.GEMINI_API_KEY);
+  const groqApiKey = normalizeApiKey(process.env.GROQ_API_KEY);
+
+  if (isLikelyConfiguredApiKey(geminiApiKey, ['AIza'])) {
+    configuredProviders.push({
+      name: 'Gemini',
+      create: () => createGeminiProvider(geminiApiKey)
+    });
   }
-  if (process.env.GROQ_API_KEY) {
-    try {
-      chatProviders.push(await createGroqProvider(process.env.GROQ_API_KEY));
-    } catch (e) {
-      console.warn('Groq provider init failed:', e.message);
-    }
+
+  if (isLikelyConfiguredApiKey(groqApiKey, ['gsk_'])) {
+    configuredProviders.push({
+      name: 'Groq',
+      create: () => createGroqProvider(groqApiKey)
+    });
   }
-  if (process.env.OPENAI_API_KEY) {
+
+  if (isLikelyConfiguredApiKey(openaiApiKey, ['sk-'])) {
+    configuredProviders.push({
+      name: 'OpenAI',
+      create: () => createOpenAIProvider(openaiApiKey)
+    });
+  }
+
+  const preferredProvider = normalizeApiKey(process.env.AI_PROVIDER).toLowerCase();
+  if (preferredProvider) {
+    configuredProviders.sort((a, b) => {
+      const aRank = a.name.toLowerCase() === preferredProvider ? -1 : 0;
+      const bRank = b.name.toLowerCase() === preferredProvider ? -1 : 0;
+      return aRank - bRank;
+    });
+  }
+
+  for (const providerConfig of configuredProviders) {
     try {
-      chatProviders.push(await createOpenAIProvider(process.env.OPENAI_API_KEY));
+      chatProviders.push({
+        name: providerConfig.name,
+        generate: await providerConfig.create()
+      });
     } catch (e) {
-      console.warn('OpenAI provider init failed:', e.message);
+      console.warn(`${providerConfig.name} provider init failed:`, e.message);
     }
   }
 
   if (chatProviders.length === 0) {
-    console.warn('⚠️ No AI providers configured. Check GEMINI_API_KEY, GROQ_API_KEY, OPENAI_API_KEY in server/.env');
+    console.warn('No valid AI providers configured. Check GEMINI_API_KEY, GROQ_API_KEY, OPENAI_API_KEY in server/.env');
   } else {
-    console.log(`✅ AI initialized with ${chatProviders.length} providers: ${chatProviders.map((_,i) => ['Gemini','Groq','OpenAI'][i] || 'Unknown').filter(Boolean).join(', ')}`);
+    console.log(`AI initialized with ${chatProviders.length} providers: ${chatProviders.map(provider => provider.name).join(', ')}`);
   }
 
   aiInitialized = true;
@@ -173,10 +211,10 @@ async function getChatModel() {
       for (let i = 0; i < chatProviders.length; i++) {
         const provider = chatProviders[i];
         try {
-          const result = await provider(contents);
+          const result = await provider.generate(contents);
           return result;
         } catch (error) {
-          console.warn(`Provider ${i + 1} failed:`, error.message);
+          console.warn(`${provider.name} provider failed:`, error.message);
           if (i === chatProviders.length - 1) {
             throw new Error('All AI providers failed. Please check your API keys and quotas.');
           }
@@ -215,6 +253,42 @@ function cosineSimilarity(vec1, vec2) {
   return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
 }
 
+function isDocumentOnlyQuestion(question) {
+  const normalizedQuestion = question.toLowerCase();
+  const documentOnlyPatterns = [
+    /\bhr\b/,
+    /\bpolicy\b/,
+    /\bleave\b/,
+    /\bvacation\b/,
+    /\bpto\b/,
+    /\battendance\b/,
+    /\bpayroll\b/,
+    /\bsalary\b/,
+    /\bbenefits?\b/,
+    /\bprobation\b/,
+    /\bresignation\b/,
+    /\btermination\b/,
+    /\bholiday\b/,
+    /\bwork from home\b/,
+    /\bremote work\b/,
+    /\bemployee\b/,
+    /\bnotice period\b/,
+    /\bgrievance\b/,
+    /\bcode of conduct\b/,
+    /\breimbursement\b/
+  ];
+
+  return documentOnlyPatterns.some(pattern => pattern.test(normalizedQuestion));
+}
+
+async function hasCompletedDocuments() {
+  try {
+    return Boolean(await Document.exists({ status: 'completed' }));
+  } catch {
+    return false;
+  }
+}
+
 export async function findRelevantChunks(question, topK = RETRIEVE_TOP_K) {
   try {
     const questionEmbedding = await generateEmbedding(question);
@@ -248,7 +322,7 @@ export async function findRelevantChunks(question, topK = RETRIEVE_TOP_K) {
       {
         $project: {
           text: 1,
-          sourceDocument: '$document.name',
+          sourceDocument: { $ifNull: ['$document.originalName', '$document.fileName'] },
           pageNumber: 1,
           embedding: 1
         }
@@ -289,14 +363,17 @@ async function generateRAGAnswer(question, chunks) {
     .map((chunk, idx) => `[Document ${idx + 1}]: ${chunk.sourceDocument} (Page ${chunk.pageNumber})\n${chunk.text}`) 
     .join('\n\n');
   
-  const systemPrompt = `You are a corporate knowledge assistant. Answer questions using ONLY the provided document context.
+  const systemPrompt = `You are a document-based AI assistant.
+
+Your task is to answer questions strictly using the uploaded HR policy document context below.
 
 Rules:
-- Provide clear, concise, accurate answers
-- Use bullet points and numbered lists when helpful
-- Cite sources at the end: Source: <filename> - Page <number>
-- If unclear or not in context, say "Not found in provided documents."
-- Be professional and precise`;
+1. Answer only from the provided document context.
+2. Do not use general knowledge.
+3. Keep the answer concise and directly based on the document text.
+4. If the information is not present in the context, respond exactly with: "${DOCUMENT_ONLY_NO_ANSWER}"
+5. Prefer quoting or closely summarizing the exact section from the document.
+6. Do not invent policies, rules, or numbers not written in the document.`;
 
   const userPrompt = `Context:\n${context}\n\nQuestion: ${question}\n\nAnswer:`;
 
@@ -338,17 +415,22 @@ export async function askQuestion(question, onChunk, onCitations, onError) {
     await initializeAI();
     
     if (!chatProviders.length) {
-      onChunk("Please add AI API keys (GEMINI_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY) to server/.env and restart server.");
+      onChunk("AI is not configured yet. Add a valid GEMINI_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY in server/.env, then restart the server.");
       return;
     }
     
     const chunks = await findRelevantChunks(question, RETRIEVE_TOP_K);
+    const documentOnlyQuestion = isDocumentOnlyQuestion(question);
+    const documentsAvailable = await hasCompletedDocuments();
     
     const { mode, maxSimilarity } = detectMode(chunks);
     console.log(`MODE: ${mode} (max similarity: ${maxSimilarity.toFixed(3)})`);
     
     let result;
-    if (mode === 'RAG') {
+    if (documentOnlyQuestion && (!documentsAvailable || chunks.length === 0 || maxSimilarity < RAG_THRESHOLD)) {
+      console.log('DOCUMENT_ONLY mode - no document-backed answer found');
+      result = { answer: DOCUMENT_ONLY_NO_ANSWER, citations: [] };
+    } else if (mode === 'RAG') {
       console.log('📄 RAG mode - document-based answer');
       result = await generateRAGAnswer(question, chunks);
     } else {

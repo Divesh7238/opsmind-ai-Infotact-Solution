@@ -119,6 +119,10 @@ export default function Chat() {
                 }
               } else if (data.type === 'error') {
                 setError(data.error);
+                if (!fullText) {
+                  fullText = 'I was not able to generate a response. Please check the AI provider configuration and try again.';
+                  setStreamedText(fullText);
+                }
               }
             } catch (err) {
               // Skip invalid JSON
@@ -127,13 +131,15 @@ export default function Chat() {
         }
       }
 
-      const assistantMessage = {
-        role: 'assistant',
-        content: fullText,
-        citations,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, assistantMessage]);
+      if (fullText.trim()) {
+        const assistantMessage = {
+          role: 'assistant',
+          content: fullText,
+          citations,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, assistantMessage]);
+      }
 
     } catch (err) {
       console.error('Chat error:', err);
@@ -226,11 +232,17 @@ export default function Chat() {
                 AI
               </div>
               <div className="bg-dark-800 rounded-lg p-4 max-w-3xl">
-                <div className="flex gap-1">
-                  <span className="w-2 h-2 bg-dark-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-2 h-2 bg-dark-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-2 h-2 bg-dark-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
+                {streamedText ? (
+                  <div className="prose prose-invert max-w-none">
+                    <ReactMarkdown>{streamedText}</ReactMarkdown>
+                  </div>
+                ) : (
+                  <div className="flex gap-1">
+                    <span className="w-2 h-2 bg-dark-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-2 h-2 bg-dark-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-2 h-2 bg-dark-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -253,7 +265,7 @@ export default function Chat() {
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask a question about your documents..."
+                placeholder="Ask about your HR policy or any general question..."
                 className="w-full px-6 py-4 bg-dark-800 border border-dark-600 rounded-xl text-white placeholder-dark-500 focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500 pr-14"
                 disabled={isLoading}
               />
@@ -270,7 +282,7 @@ export default function Chat() {
               </button>
             </div>
             <p className="text-center text-dark-500 text-sm mt-3">
-              AI provides answers based only on uploaded documents
+              HR policy questions are answered from uploaded documents. General questions use the AI assistant.
             </p>
           </form>
         </div>
