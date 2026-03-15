@@ -30,15 +30,49 @@ const isHostedEnvironment = Boolean(
   process.env.FLY_APP_NAME ||
   process.env.NODE_ENV === 'production'
 );
+const configuredOrigins = [
+  process.env.CLIENT_URL,
+  process.env.CLIENT_URLS,
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://opsmind-ai-divesh.onrender.com',
+].flatMap((value) => {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+});
+
+const allowRenderPreviewOrigin = (origin) => /^https:\/\/[a-z0-9-]+\.onrender\.com$/i.test(origin);
+const allowLocalDevOrigin = (origin) => /^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin);
+const corsOriginHandler = (origin, callback) => {
+  if (!origin) {
+    callback(null, true);
+    return;
+  }
+
+  if (
+    configuredOrigins.includes(origin) ||
+    allowLocalDevOrigin(origin) ||
+    (isHostedEnvironment && allowRenderPreviewOrigin(origin))
+  ) {
+    callback(null, true);
+    return;
+  }
+
+  callback(new Error(`CORS blocked for origin: ${origin}`));
+};
 
 // Security middleware
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
 app.use(cors({
-  origin: isHostedEnvironment
-    ? process.env.CLIENT_URL
-    : ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  origin: corsOriginHandler,
   credentials: true
 }));
 
